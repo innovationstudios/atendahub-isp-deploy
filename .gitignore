@@ -1,0 +1,16 @@
+env/.env
+.env
+*.env.local
+
+# Não versionar tarballs grandes de imagens (cada release é regenerada).
+# Mantenha sob controle de versão apenas se você tiver releases pequenas
+# ou se o repositório for privado com Git LFS configurado.
+# images/*.tar
+
+# Logs e temporários
+*.log
+*.tmp
+*.bak
+
+# Pastas locais
+tmp/

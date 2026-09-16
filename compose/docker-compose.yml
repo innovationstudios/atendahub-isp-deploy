@@ -1,0 +1,244 @@
+# =============================================================
+# AtendaHub ISP — pacote standalone para o cliente
+#
+# Este compose NÃO contém código-fonte nem Dockerfile; ele
+# consome imagens pré-buildadas (backend-go, frontend-isp,
+# whatsmeow-worker) empacotadas via docker load / pull.
+#
+# Antes do primeiro `up`:
+#   1. cp .env.example .env  (em deploy-pkg/env/.env)
+#   2. editar .env com credenciais reais (DB_PASS, JWT_SECRET, etc.)
+#   3. ./install.sh
+#
+# Para mudar URLs/marca do frontend-isp (VITE_*): reconstruir
+# a imagem no seu ambiente e reexecutar export-images.sh.
+# As demais configurações são lidas em tempo de execução via .env.
+# =============================================================
+
+name: atendahub-isp
+
+services:
+  # ---------------- Edge interno (frontend-isp) ----------------
+  frontend-isp:
+    image: ${FRONTEND_ISP_IMAGE:-atendahub/frontend-isp:latest}
+    restart: always
+    ports:
+      - "127.0.0.1:8082:80"
+    depends_on:
+      backend-go:
+        condition: service_healthy
+    networks:
+      isp:
+        aliases:
+          - connecthub-frontend
+
+  # ---------------- API Go ----------------
+  backend-go:
+    image: ${BACKEND_GO_IMAGE:-atendahub/backend-go:latest}
+    restart: always
+    env_file:
+      - ../env/.env
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      APP_ENV: production
+      HTTP_ADDR: ":8081"
+      PUBLIC_URL: ${PUBLIC_URL:?PUBLIC_URL must be set in .env}
+      FRONTEND_URL: ${FRONTEND_URL:?FRONTEND_URL must be set in .env}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-${FRONTEND_URL}}
+      CORS_ALLOW_DEV_HOSTS: "false"
+      DB_DRIVER: postgres
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-atendahub}
+      DB_USER: ${DB_USER:?DB_USER must be set in .env}
+      DB_PASS: ${DB_PASS:?DB_PASS must be set in .env}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-30m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+      COOKIE_SECURE: "false"
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-atendahub}:${RABBITMQ_PASS:-atendahub}@rabbitmq:5672/
+      WHATSMEOW_API_URL: http://whatsmeow-worker:7733
+      WHATSMEOW_API_TOKEN: ${WHATSMEOW_API_TOKEN:?WHATSMEOW_API_TOKEN must be set in .env}
+      WHATSMEOW_WEBHOOK_URL: http://backend-go:8081/whatsapp/whatsmeow/incoming
+      META_GRAPH_URL: ${META_GRAPH_URL:-https://graph.facebook.com/v24.0}
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      AI_API_URL: ${AI_API_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-gemini-2.5-flash}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-800}
+      AI_TEMPERATURE: ${AI_TEMPERATURE:-0.3}
+      UPLOAD_DIR: /app/storage/public
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
+    ports:
+      - "127.0.0.1:18081:8081"
+    volumes:
+      - backend_storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      whatsmeow-schema:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      isp:
+        aliases:
+          - connecthub-backend
+
+  # ---------------- Worker WhatsApp ----------------
+  whatsmeow-worker:
+    image: ${WHATSMEOW_WORKER_IMAGE:-atendahub/whatsmeow-worker:latest}
+    restart: always
+    env_file:
+      - ../env/.env
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      ENVIRONMENT: production
+      PORT: "7733"
+      GIN_MODE: release
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:?DB_USER must be set in .env}
+      DB_PASS: ${DB_PASS:?DB_PASS must be set in .env}
+      DB_NAME: ${WHATSMEOW_DATABASE:-atendahub_whatsmeow}
+      JWT_SECRET: ${WHATSMEOW_JWT_SECRET:?WHATSMEOW_JWT_SECRET must be set in .env}
+      API_KEY: ${WHATSMEOW_API_TOKEN:?WHATSMEOW_API_TOKEN must be set in .env}
+      WEBHOOK_URL: http://backend-go:8081/whatsapp/whatsmeow/incoming
+      DISABLE_HISTORY_SYNC: ${WHATSMEOW_DISABLE_HISTORY_SYNC:-false}
+      LAZY_LOAD_SESSIONS: "true"
+      AUTO_RETRY_DM_ON_CAPPED: "true"
+      DISABLE_MANUAL_HISTORY_SYNC_RECEIPT: "false"
+      MANUAL_HISTORY_SYNC_DOWNLOAD: "false"
+      SESSION_CLEANUP_INTERVAL_MINUTES: "30"
+      SESSION_INACTIVE_TIMEOUT_HOURS: "2"
+      WHATSAPP_LOG_LEVEL: ${WHATSAPP_LOG_LEVEL:-INFO}
+      DEVICE_NAME: ${WHATSMEOW_DEVICE_NAME:-AtendaHub}
+      CORS_ENABLED: "true"
+      ALLOWED_ORIGINS: ${FRONTEND_URL},${PUBLIC_URL}
+    volumes:
+      - whatsmeow_data:/app/data
+      - whatsmeow_logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      whatsmeow-schema:
+        condition: service_completed_successfully
+    networks:
+      - isp
+
+  # ---------------- Infra ----------------
+  db:
+    image: postgres:16-alpine
+    restart: always
+    env_file:
+      - ../env/.env
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      POSTGRES_DB: ${DB_NAME:-atendahub}
+      POSTGRES_USER: ${DB_USER:?DB_USER must be set in .env}
+      POSTGRES_PASSWORD: ${DB_PASS:?DB_PASS must be set in .env}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ../db/seed.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    ports:
+      - "127.0.0.1:55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - isp
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:56380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - isp
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    restart: always
+    env_file:
+      - ../env/.env
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-atendahub}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-atendahub}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "127.0.0.1:5673:5672"
+      - "127.0.0.1:15673:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    networks:
+      - isp
+
+  # Cria o banco isolado do WhatsMeow e aplica as migrations SQL do worker.
+  whatsmeow-schema:
+    image: postgres:16-alpine
+    restart: "no"
+    env_file:
+      - ../env/.env
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: postgres
+      PGUSER: ${DB_USER:?DB_USER must be set in .env}
+      PGPASSWORD: ${DB_PASS:?DB_PASS must be set in .env}
+      WHATSMEOW_DATABASE: ${WHATSMEOW_DATABASE:-atendahub_whatsmeow}
+    command:
+      - sh
+      - -c
+      - >-
+        until pg_isready -h db -p 5432 -U "$${PGUSER}" -d postgres; do sleep 1; done;
+        if [ "$$(psql -Atqc "SELECT 1 FROM pg_database WHERE datname = '$${WHATSMEOW_DATABASE}'" -d postgres)" != "1" ]; then
+          createdb -h db -p 5432 -U "$${PGUSER}" "$${WHATSMEOW_DATABASE}";
+        fi;
+        for file in /migrations/00[2-8]_*.sql; do
+          echo "Applying WhatsMeow schema: $$file";
+          psql -v ON_ERROR_STOP=1 -d "$${WHATSMEOW_DATABASE}" -f "$$file";
+        done
+    volumes:
+      - ../db/whatsmeow-migrations:/migrations:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - isp
+
+volumes:
+  db_data:
+  redis_data:
+  rabbitmq_data:
+  backend_storage:
+  whatsmeow_data:
+  whatsmeow_logs:
+
+networks:
+  isp:
+    name: atendahub-isp
