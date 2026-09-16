@@ -23,21 +23,44 @@ ENV_FILE="${ROOT_DIR}/env/.env"
 
 usage() {
   cat <<EOF
-Uso:
-  $0 --api api.<dominio> --app app.<dominio> [--email admin@<dominio>]
+Uso (qualquer um dos formatos):
+  $0 cliente.com.br
+  $0 app.cliente.com.br api.cliente.com.br
+  $0 --api api.cliente.com.br --app app.cliente.com.br
 Exemplo:
-  $0 --api api.exemplo.com.br --app app.exemplo.com.br --email admin@exemplo.com.br
+  $0 exemplo.com.br
 EOF
 }
 
-API="" APP="" EMAIL=""
+normalize_domain() {
+  d="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's|^https\?://||; s|/.*||')"
+  case "${d}" in
+    *.*.*) echo "${d}" ;;              # já tem subdomínio (app.x / api.x)
+    *) echo "${d}" ;;
+  esac
+}
+
+API="" APP=""
+if [[ $# -eq 1 ]] && [[ "$1" != --* ]]; then
+  ROOT="$(normalize_domain "$1")"
+  APP="app.${ROOT}"
+  API="api.${ROOT}"
+  shift
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --api)  API="$2"; shift 2 ;;
-    --app)  APP="$2"; shift 2 ;;
-    --email) EMAIL="$2"; shift 2 ;;
+    --api) API="$2"; shift 2 ;;
+    --app) APP="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "Argumento inválido: $1" >&2; usage; exit 1 ;;
+    --) shift; break ;;
+    -*) echo "Argumento inválido: $1" >&2; usage; exit 1 ;;
+    *)
+      # fallback posicional: 1º = app, 2º = api
+      if [[ -z "${APP}" ]]; then APP="$1"
+      elif [[ -z "${API}" ]]; then API="$1"
+      else echo "Argumento extra: $1" >&2; usage; exit 1; fi
+      shift ;;
   esac
 done
 
@@ -58,7 +81,7 @@ sed -i \
   -e "s|^CORS_ALLOWED_ORIGINS=.*|CORS_ALLOWED_ORIGINS=https://${APP}|" \
   "${ENV_FILE}"
 
-[[ -n "${EMAIL}" ]] && log "Lembrete: o e-mail ${EMAIL} será usado pelo Let's Encrypt no edge do cliente."
+[[ -n "${EMAIL:-}" ]] && log "Lembrete: o e-mail ${EMAIL} será usado pelo Let's Encrypt no edge do cliente."
 
 log "PUBLIC_URL  → https://${API}"
 log "FRONTEND_URL → https://${APP}"
