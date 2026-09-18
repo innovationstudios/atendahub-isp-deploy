@@ -53,11 +53,15 @@ docker compose version >/dev/null 2>&1 || err "plugin 'docker compose' não enco
 if [[ "${SKIP_LOAD}" -eq 0 ]]; then
   for svc in backend-go whatsmeow-worker frontend-isp; do
     tar="${IMAGES_DIR}/${svc}-${TAG}.tar"
+    if [[ ! -f "${tar}" && -L "${IMAGES_DIR}/${svc}-latest.tar" ]]; then
+      tar="${IMAGES_DIR}/${svc}-latest.tar"
+      log "tarball ${TAG} ausente; usando fallback ${tar}"
+    fi
     if [[ -f "${tar}" ]]; then
       log "carregando imagem ${svc}:${TAG}"
       docker load -i "${tar}"
     else
-      log "tarball ausente (${tar}); assumindo imagem já presente ou vinda de registry"
+      log "tarball ausente (${IMAGES_DIR}/${svc}-${TAG}.tar); assumindo imagem já presente ou vinda de registry"
     fi
   done
 else
